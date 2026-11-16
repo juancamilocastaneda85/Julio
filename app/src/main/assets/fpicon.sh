@@ -1,10 +1,11 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Corre como root. Usa las herramientas de Termux (magick, potrace, aapt2, apksigner).
-# Uso: fpicon.sh imagen [colores] [tamano_en_%]
+# Uso: fpicon.sh imagen [colores] [tamano_en_%] [modo: icon|bg]
 set -e
 IMG="$1"
-NCOL="${2:-6}"      # cantidad de colores
+NCOL="${2:-8}"      # cantidad de colores
 PCT="${3:-130}"     # tamano del icono: 100 = normal, 130 = 30% mas grande
+MODE="${4:-icon}"   # icon = dibujo en el icono (1 color) | bg = dibujo en el fondo (colores originales, experimental)
 H=/data/data/com.termux/files/home
 W="${FPWORK:-/data/local/tmp/fpwork}"
 
@@ -54,10 +55,23 @@ done
 
 if [ -n "$DRYRUN" ]; then echo "DRYRUN: ic.xml listo en $W"; exit 0; fi
 
-for d in drawable drawable-v21; do
-  cp ic.xml res/$d/ic_fingerprint.xml
-  cp ic.xml res/$d/cat_icon.xml
-done
+EMPTY='<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="46dp" android:height="65dp" android:viewportWidth="46" android:viewportHeight="65"/>'
+if [ "$MODE" = "bg" ]; then
+  # Colores: el dibujo va en el fondo de la huella; el icono queda vacio
+  for d in drawable drawable-v21; do
+    echo "$EMPTY" > res/$d/ic_fingerprint.xml
+    echo "$EMPTY" > res/$d/cat_icon.xml
+  done
+  cp ic.xml res/drawable/fingerprint_bg.xml
+else
+  for d in drawable drawable-v21; do
+    cp ic.xml res/$d/ic_fingerprint.xml
+    cp ic.xml res/$d/cat_icon.xml
+  done
+  # Quita el circulo oscuro del fondo
+  printf '<?xml version="1.0" encoding="utf-8"?>\n<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval"><solid android:color="#00000000"/></shape>\n' > res/drawable/fingerprint_bg.xml
+fi
 for n in unlock_to_fp fp_to_locked fp_to_unlock; do
   printf '<?xml version="1.0" encoding="utf-8"?>\n<animated-vector xmlns:android="http://schemas.android.com/apk/res/android" android:drawable="@drawable/cat_icon"/>\n' > res/drawable/$n.xml
 done
