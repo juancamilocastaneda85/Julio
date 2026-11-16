@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -25,6 +26,7 @@ class MainActivity : Activity() {
     private lateinit var btnApply: Button
     private lateinit var btnRemove: Button
     private lateinit var btnReboot: Button
+    private lateinit var chkColor: CheckBox
     private var picked: File? = null
 
     private val envPrefix =
@@ -72,6 +74,10 @@ class MainActivity : Activity() {
                 )
             }
         }
+        chkColor = CheckBox(this).apply {
+            text = "Colores originales (experimental)"
+            setTextColor(Color.WHITE)
+        }
         btnApply = Button(this).apply {
             text = "2. Aplicar"
             isEnabled = false
@@ -87,6 +93,7 @@ class MainActivity : Activity() {
             setOnClickListener { remove() }
         }
         root.addView(btnPick)
+        root.addView(chkColor)
         root.addView(btnApply)
         root.addView(btnReboot)
         root.addView(btnRemove)
@@ -123,6 +130,7 @@ class MainActivity : Activity() {
 
     private fun apply() {
         val img = picked ?: return
+        val mode = if (chkColor.isChecked) "bg" else "icon"
         btnApply.isEnabled = false
         btnReboot.visibility = View.GONE
         log.text = ""
@@ -135,7 +143,7 @@ class MainActivity : Activity() {
                 "cp ${script.absolutePath} /data/local/tmp/fpicon.sh && " +
                 "chmod 755 /data/local/tmp/fpicon.sh && " +
                 envPrefix +
-                "/data/data/com.termux/files/usr/bin/bash /data/local/tmp/fpicon.sh /data/local/tmp/fp_in.img"
+                "/data/data/com.termux/files/usr/bin/bash /data/local/tmp/fpicon.sh /data/local/tmp/fp_in.img 8 130 $mode"
             )
             runOnUiThread {
                 btnApply.isEnabled = true
@@ -153,7 +161,7 @@ class MainActivity : Activity() {
 
     private fun run(cmd: String): Boolean {
         return try {
-            val p = ProcessBuilder("su", "-M", "-c", cmd).redirectErrorStream(true).start()
+            val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
             p.inputStream.bufferedReader().forEachLine { say(it) }
             val code = p.waitFor()
             if (code != 0) say("Termino con error (codigo $code).")
