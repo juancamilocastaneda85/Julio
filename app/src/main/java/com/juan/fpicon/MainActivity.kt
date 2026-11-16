@@ -161,7 +161,7 @@ class MainActivity : Activity() {
 
     private fun run(cmd: String): Boolean {
         return try {
-            val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
+            val p = ProcessBuilder("su", "-M" "-c", cmd).redirectErrorStream(true).start()
             p.inputStream.bufferedReader().forEachLine { say(it) }
             val code = p.waitFor()
             if (code != 0) say("Termino con error (codigo $code).")
