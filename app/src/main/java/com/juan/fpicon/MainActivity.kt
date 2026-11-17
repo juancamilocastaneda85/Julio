@@ -1,86 +1,173 @@
-#!/data/data/com.termux/files/usr/bin/bash
-# Corre como root. Usa las herramientas de Termux (magick, potrace, aapt2, apksigner).
-# Uso: fpicon.sh imagen [niveles_de_gris] [tamano_en_%]
-set -e
-IMG="$1"
-NCOL="${2:-5}"      # niveles de gris (sombras)
-PCT="${3:-130}"     # tamano del icono: 100 = normal, 130 = 30% mas grande
-H=/data/data/com.termux/files/home
-W="${FPWORK:-/data/local/tmp/fpwork}"
+package com.juan.fpicon
 
-[ -f "$IMG" ] || { echo "Falta la imagen"; exit 1; }
-if [ -z "$DRYRUN" ]; then
-  [ -f "$H/framework-res.apk" ] || { echo "Falta $H/framework-res.apk"; exit 1; }
-  [ -f "$H/rro.keystore" ] || { echo "Falta $H/rro.keystore"; exit 1; }
-fi
+import android.app.Activity
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
+import android.net.Uri
+import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.widget.Button
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import java.io.File
+import kotlin.concurrent.thread
 
-# El tamano se cambia con el relleno (padding) del icono: circulo ~200px, area normal ~104px
-PAD=$(( (200 - 104*PCT/100) / 2 ))
-WDP=46; HDP=65
+class MainActivity : Activity() {
 
-rm -rf "$W"; mkdir -p "$W/res/drawable" "$W/res/drawable-v21" "$W/res/values"; cd "$W"
+    private lateinit var preview: ImageView
+    private lateinit var log: TextView
+    private lateinit var scroll: ScrollView
+    private lateinit var btnPick: Button
+    private lateinit var btnApply: Button
+    private lateinit var btnRemove: Button
+    private lateinit var btnReboot: Button
+    private var picked: File? = null
 
-# Color del fondo de la foto (esquina superior izquierda): se vuelve transparente
-BG=$(magick "$IMG" -alpha off -format '%[pixel:p{0,0}]' info:)
+    private val envPrefix =
+        "export PATH=/data/data/com.termux/files/usr/bin:\$PATH; " +
+        "export LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib; " +
+        "export HOME=/data/data/com.termux/files/home; " +
+        "export TMPDIR=/data/local/tmp; unset LD_PRELOAD; "
 
-for S in 400 300 200 150; do
-  H2=$((S*41/40))
-  case $S in
-    400) SC=0.0115;; 300) SC=0.015333;; 200) SC=0.023;; 150) SC=0.030667;;
-  esac
-  # Android pinta el icono de un solo color, pero respeta la transparencia:
-  # los grises se guardan como niveles de transparencia (sombras)
-  magick "$IMG" -alpha off -resize ${S}x${H2} -background "$BG" -gravity center -extent ${S}x${H2} -colorspace Gray +dither -colors "$NCOL" -type TrueColor q.png
-  BGHEX=$(magick q.png -format '%[hex:p{0,0}]' info: | tr a-f A-F | cut -c1-6)
-  : > body.txt
-  for C in $(magick q.png -unique-colors txt:- | grep -o '#[0-9A-Fa-f]\{6\}' | tr a-f A-F | sort -u); do
-    HEX=${C#\#}
-    [ "$HEX" = "$BGHEX" ] && continue
-    LUM=$((16#${HEX:0:2}))
-    AL=$(printf '%02X' $(( 70 + LUM*185/255 )))
-    magick q.png -fuzz 0% -transparent "$C" -alpha extract -threshold 50% m.pbm
-    potrace -s -t 4 -O 0.5 m.pbm -o m.svg
-    sed -n '/<path/,$p' m.svg | tr '\n' ' ' \
-      | sed "s/<path d=\"/<path android:fillColor=\"#${AL}FFFFFF\" android:pathData=\"/g; s/\" *\/>/\"\/>\n/g" \
-      | grep '<path' >> body.txt || true
-  done
-  {
-    echo '<?xml version="1.0" encoding="utf-8"?>'
-    echo "<vector xmlns:android=\"http://schemas.android.com/apk/res/android\" android:width=\"${WDP}dp\" android:height=\"${HDP}dp\" android:viewportWidth=\"46\" android:viewportHeight=\"65\"><group android:translateY=\"56.1\" android:scaleX=\"$SC\" android:scaleY=\"-$SC\">"
-    cat body.txt
-    echo '</group></vector>'
-  } > ic.xml
-  SIZE=$(wc -c < ic.xml)
-  echo "Intento ${S}px, ${NCOL} niveles -> ${SIZE} bytes"
-  [ "$SIZE" -le 50000 ] && break
-done
-[ -s body.txt ] || { echo "No se genero ningun trazo. Prueba otra foto."; exit 1; }
-[ "$SIZE" -le 70000 ] || { echo "Imagen demasiado compleja. Usa una mas simple."; exit 1; }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val d = resources.displayMetrics.density
+        val pad = (16 * d).toInt()
 
-if [ -n "$DRYRUN" ]; then echo "DRYRUN: ic.xml listo en $W"; exit 0; fi
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad * 2, pad, pad)
+            setBackgroundColor(Color.parseColor("#121212"))
+        }
 
-for d in drawable drawable-v21; do
-  cp ic.xml res/$d/ic_fingerprint.xml
-  cp ic.xml res/$d/cat_icon.xml
-done
-for n in unlock_to_fp fp_to_locked fp_to_unlock; do
-  printf '<?xml version="1.0" encoding="utf-8"?>\n<animated-vector xmlns:android="http://schemas.android.com/apk/res/android" android:drawable="@drawable/cat_icon"/>\n' > res/drawable/$n.xml
-done
-# Quita el circulo oscuro del fondo
-printf '<?xml version="1.0" encoding="utf-8"?>\n<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval"><solid android:color="#00000000"/></shape>\n' > res/drawable/fingerprint_bg.xml
+        root.addView(TextView(this).apply {
+            text = "Icono de huella"
+            textSize = 24f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+        })
+        root.addView(TextView(this).apply {
+            text = "Solo para S20 FE (VoltageOS). Requiere root."
+            textSize = 13f
+            setTextColor(Color.parseColor("#9E9E9E"))
+        })
 
-# Icono mas grande: menos relleno alrededor
-printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n<dimen name="lock_icon_padding">%spx</dimen>\n</resources>\n' "$PAD" > res/values/dimens.xml
+        preview = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(Color.parseColor("#1E1E1E"))
+        }
+        root.addView(preview, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, (220 * d).toInt()
+        ).apply { topMargin = pad; bottomMargin = pad })
 
-printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.custom.fpicon">\n<overlay android:targetPackage="com.android.systemui" android:isStatic="true" android:priority="99"/>\n<application android:hasCode="false"/>\n</manifest>\n' > AndroidManifest.xml
+        btnPick = Button(this).apply {
+            text = "1. Elegir foto"
+            setOnClickListener {
+                startActivityForResult(
+                    Intent(Intent.ACTION_GET_CONTENT).apply { type = "image/*" }, 1
+                )
+            }
+        }
+        btnApply = Button(this).apply {
+            text = "2. Aplicar"
+            isEnabled = false
+            setOnClickListener { apply() }
+        }
+        btnReboot = Button(this).apply {
+            text = "3. Reiniciar"
+            visibility = View.GONE
+            setOnClickListener { thread { run("reboot") } }
+        }
+        btnRemove = Button(this).apply {
+            text = "Quitar icono personalizado"
+            setOnClickListener { remove() }
+        }
+        root.addView(btnPick)
+        root.addView(btnApply)
+        root.addView(btnReboot)
+        root.addView(btnRemove)
 
-aapt2 compile --dir res -o res.zip
-aapt2 link -o un.apk -I "$H/framework-res.apk" --manifest AndroidManifest.xml res.zip
-apksigner sign --ks "$H/rro.keystore" --ks-pass pass:123456 --out FpIconOverlay.apk un.apk
+        log = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.parseColor("#B0BEC5"))
+            typeface = Typeface.MONOSPACE
+            gravity = Gravity.START
+        }
+        scroll = ScrollView(this).apply { addView(log) }
+        root.addView(scroll, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ).apply { topMargin = pad })
 
-mount -o rw,remount /product || true
-cp FpIconOverlay.apk /product/overlay/FpIconOverlay.apk
-chmod 644 /product/overlay/FpIconOverlay.apk
-chcon u:object_r:system_file:s0 /product/overlay/FpIconOverlay.apk
-echo "Relleno del icono: ${PAD}px"
-echo "LISTO. Reinicia el telefono."
+        setContentView(root)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val uri: Uri = data?.data ?: return
+        if (requestCode != 1 || resultCode != RESULT_OK) return
+        try {
+            val f = File(cacheDir, "in.img")
+            contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { o -> i.copyTo(o) } }
+            picked = f
+            preview.setImageURI(uri)
+            btnApply.isEnabled = true
+            say("Foto lista.")
+        } catch (e: Exception) {
+            say("No pude leer la foto: ${e.message}")
+        }
+    }
+
+    private fun apply() {
+        val img = picked ?: return
+        btnApply.isEnabled = false
+        btnReboot.visibility = View.GONE
+        log.text = ""
+        say("Procesando, tarda unos segundos...")
+        thread {
+            val script = File(cacheDir, "fpicon.sh")
+            assets.open("fpicon.sh").use { i -> script.outputStream().use { o -> i.copyTo(o) } }
+            val ok = run(
+                "cp ${img.absolutePath} /data/local/tmp/fp_in.img && " +
+                "cp ${script.absolutePath} /data/local/tmp/fpicon.sh && " +
+                "chmod 755 /data/local/tmp/fpicon.sh && " +
+                envPrefix +
+                "/data/data/com.termux/files/usr/bin/bash /data/local/tmp/fpicon.sh /data/local/tmp/fp_in.img 5 130"
+            )
+            runOnUiThread {
+                btnApply.isEnabled = true
+                if (ok) btnReboot.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private fun remove() {
+        thread {
+            run("mount -o rw,remount /product; rm -f /product/overlay/FpIconOverlay.apk && echo 'Quitado. Reinicia el telefono.'")
+            runOnUiThread { btnReboot.visibility = View.VISIBLE }
+        }
+    }
+
+    private fun run(cmd: String): Boolean {
+        return try {
+            val p = ProcessBuilder("su", "-M", "-c", cmd).redirectErrorStream(true).start()
+            p.inputStream.bufferedReader().forEachLine { say(it) }
+            val code = p.waitFor()
+            if (code != 0) say("Termino con error (codigo $code).")
+            code == 0
+        } catch (e: Exception) {
+            say("Error: ${e.message}. Revisa que la app tenga permiso root.")
+            false
+        }
+    }
+
+    private fun say(s: String) {
+        runOnUiThread {
+            log.append(s + "\n")
+            scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        }
+    }
+}
