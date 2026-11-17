@@ -1,11 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Corre como root. Usa las herramientas de Termux (magick, potrace, aapt2, apksigner).
-# Uso: fpicon.sh imagen [colores] [tamano_en_%] [modo: icon|bg]
+# Uso: fpicon.sh imagen [niveles_de_gris] [tamano_en_%]
 set -e
 IMG="$1"
-NCOL="${2:-8}"      # cantidad de colores
+NCOL="${2:-5}"      # niveles de gris (sombras)
 PCT="${3:-130}"     # tamano del icono: 100 = normal, 130 = 30% mas grande
-MODE="${4:-icon}"   # icon = dibujo en el icono (1 color) | bg = dibujo en el fondo (colores originales, experimental)
 H=/data/data/com.termux/files/home
 W="${FPWORK:-/data/local/tmp/fpwork}"
 
@@ -15,10 +14,11 @@ if [ -z "$DRYRUN" ]; then
   [ -f "$H/rro.keystore" ] || { echo "Falta $H/rro.keystore"; exit 1; }
 fi
 
-dp() { echo "$(( $1*PCT/100 )).$(( ($1*PCT/10)%10 ))"; }
-WDP=$(dp 46); HDP=$(dp 65)
+# El tamano se cambia con el relleno (padding) del icono: circulo ~200px, area normal ~104px
+PAD=$(( (200 - 104*PCT/100) / 2 ))
+WDP=46; HDP=65
 
-rm -rf "$W"; mkdir -p "$W/res/drawable" "$W/res/drawable-v21"; cd "$W"
+rm -rf "$W"; mkdir -p "$W/res/drawable" "$W/res/drawable-v21" "$W/res/values"; cd "$W"
 
 # Color del fondo de la foto (esquina superior izquierda): se vuelve transparente
 BG=$(magick "$IMG" -alpha off -format '%[pixel:p{0,0}]' info:)
@@ -28,16 +28,20 @@ for S in 400 300 200 150; do
   case $S in
     400) SC=0.0115;; 300) SC=0.015333;; 200) SC=0.023;; 150) SC=0.030667;;
   esac
-  magick "$IMG" -alpha off -resize ${S}x${H2} -background "$BG" -gravity center -extent ${S}x${H2} +dither -colors "$NCOL" -type TrueColor q.png
+  # Android pinta el icono de un solo color, pero respeta la transparencia:
+  # los grises se guardan como niveles de transparencia (sombras)
+  magick "$IMG" -alpha off -resize ${S}x${H2} -background "$BG" -gravity center -extent ${S}x${H2} -colorspace Gray +dither -colors "$NCOL" -type TrueColor q.png
   BGHEX=$(magick q.png -format '%[hex:p{0,0}]' info: | tr a-f A-F | cut -c1-6)
   : > body.txt
   for C in $(magick q.png -unique-colors txt:- | grep -o '#[0-9A-Fa-f]\{6\}' | tr a-f A-F | sort -u); do
     HEX=${C#\#}
     [ "$HEX" = "$BGHEX" ] && continue
+    LUM=$((16#${HEX:0:2}))
+    AL=$(printf '%02X' $(( 70 + LUM*185/255 )))
     magick q.png -fuzz 0% -transparent "$C" -alpha extract -threshold 50% m.pbm
     potrace -s -t 4 -O 0.5 m.pbm -o m.svg
     sed -n '/<path/,$p' m.svg | tr '\n' ' ' \
-      | sed "s/<path d=\"/<path android:fillColor=\"#FF$HEX\" android:pathData=\"/g; s/\" *\/>/\"\/>\n/g" \
+      | sed "s/<path d=\"/<path android:fillColor=\"#${AL}FFFFFF\" android:pathData=\"/g; s/\" *\/>/\"\/>\n/g" \
       | grep '<path' >> body.txt || true
   done
   {
@@ -47,7 +51,7 @@ for S in 400 300 200 150; do
     echo '</group></vector>'
   } > ic.xml
   SIZE=$(wc -c < ic.xml)
-  echo "Intento ${S}px, ${NCOL} colores -> ${SIZE} bytes"
+  echo "Intento ${S}px, ${NCOL} niveles -> ${SIZE} bytes"
   [ "$SIZE" -le 50000 ] && break
 done
 [ -s body.txt ] || { echo "No se genero ningun trazo. Prueba otra foto."; exit 1; }
@@ -55,26 +59,18 @@ done
 
 if [ -n "$DRYRUN" ]; then echo "DRYRUN: ic.xml listo en $W"; exit 0; fi
 
-EMPTY='<?xml version="1.0" encoding="utf-8"?>
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="46dp" android:height="65dp" android:viewportWidth="46" android:viewportHeight="65"/>'
-if [ "$MODE" = "bg" ]; then
-  # Colores: el dibujo va en el fondo de la huella; el icono queda vacio
-  for d in drawable drawable-v21; do
-    echo "$EMPTY" > res/$d/ic_fingerprint.xml
-    echo "$EMPTY" > res/$d/cat_icon.xml
-  done
-  cp ic.xml res/drawable/fingerprint_bg.xml
-else
-  for d in drawable drawable-v21; do
-    cp ic.xml res/$d/ic_fingerprint.xml
-    cp ic.xml res/$d/cat_icon.xml
-  done
-  # Quita el circulo oscuro del fondo
-  printf '<?xml version="1.0" encoding="utf-8"?>\n<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval"><solid android:color="#00000000"/></shape>\n' > res/drawable/fingerprint_bg.xml
-fi
+for d in drawable drawable-v21; do
+  cp ic.xml res/$d/ic_fingerprint.xml
+  cp ic.xml res/$d/cat_icon.xml
+done
 for n in unlock_to_fp fp_to_locked fp_to_unlock; do
   printf '<?xml version="1.0" encoding="utf-8"?>\n<animated-vector xmlns:android="http://schemas.android.com/apk/res/android" android:drawable="@drawable/cat_icon"/>\n' > res/drawable/$n.xml
 done
+# Quita el circulo oscuro del fondo
+printf '<?xml version="1.0" encoding="utf-8"?>\n<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval"><solid android:color="#00000000"/></shape>\n' > res/drawable/fingerprint_bg.xml
+
+# Icono mas grande: menos relleno alrededor
+printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n<dimen name="lock_icon_padding">%spx</dimen>\n</resources>\n' "$PAD" > res/values/dimens.xml
 
 printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.custom.fpicon">\n<overlay android:targetPackage="com.android.systemui" android:isStatic="true" android:priority="99"/>\n<application android:hasCode="false"/>\n</manifest>\n' > AndroidManifest.xml
 
@@ -86,4 +82,5 @@ mount -o rw,remount /product || true
 cp FpIconOverlay.apk /product/overlay/FpIconOverlay.apk
 chmod 644 /product/overlay/FpIconOverlay.apk
 chcon u:object_r:system_file:s0 /product/overlay/FpIconOverlay.apk
+echo "Relleno del icono: ${PAD}px"
 echo "LISTO. Reinicia el telefono."
