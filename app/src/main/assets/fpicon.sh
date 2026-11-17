@@ -1,10 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Corre como root. Usa las herramientas de Termux (magick, potrace, aapt2, apksigner).
-# Uso: fpicon.sh imagen [niveles_de_gris] [tamano_en_%]
+# Uso: fpicon.sh imagen [niveles_de_gris]
 set -e
 IMG="$1"
 NCOL="${2:-5}"      # niveles de gris (sombras)
-PCT="${3:-130}"     # tamano del icono: 100 = normal, 130 = 30% mas grande
 H=/data/data/com.termux/files/home
 W="${FPWORK:-/data/local/tmp/fpwork}"
 
@@ -14,30 +13,28 @@ if [ -z "$DRYRUN" ]; then
   [ -f "$H/rro.keystore" ] || { echo "Falta $H/rro.keystore"; exit 1; }
 fi
 
-# El tamano se cambia con el relleno (padding) del icono: circulo ~200px, area normal ~104px
-PAD=$(( (200 - 104*PCT/100) / 2 ))
-WDP=46; HDP=65
+# Dibujo cuadrado (65x65) para aprovechar todo el espacio del icono
 
-rm -rf "$W"; mkdir -p "$W/res/drawable" "$W/res/drawable-v21" "$W/res/values"; cd "$W"
+rm -rf "$W"; mkdir -p "$W/res/drawable" "$W/res/drawable-v21"; cd "$W"
 
 # Color del fondo de la foto (esquina superior izquierda): se vuelve transparente
 BG=$(magick "$IMG" -alpha off -format '%[pixel:p{0,0}]' info:)
 
 for S in 400 300 200 150; do
-  H2=$((S*41/40))
+  H2=$S
   case $S in
-    400) SC=0.0115;; 300) SC=0.015333;; 200) SC=0.023;; 150) SC=0.030667;;
+    400) SC=0.01625;; 300) SC=0.021667;; 200) SC=0.0325;; 150) SC=0.043333;;
   esac
   # Android pinta el icono de un solo color, pero respeta la transparencia:
   # los grises se guardan como niveles de transparencia (sombras)
-  magick "$IMG" -alpha off -resize ${S}x${H2} -background "$BG" -gravity center -extent ${S}x${H2} -colorspace Gray +dither -colors "$NCOL" -type TrueColor q.png
+  magick "$IMG" -alpha off -resize ${S}x${H2} -background "$BG" -gravity center -extent ${S}x${H2} -colorspace Gray -normalize +dither -colors "$NCOL" -type TrueColor q.png
   BGHEX=$(magick q.png -format '%[hex:p{0,0}]' info: | tr a-f A-F | cut -c1-6)
   : > body.txt
   for C in $(magick q.png -unique-colors txt:- | grep -o '#[0-9A-Fa-f]\{6\}' | tr a-f A-F | sort -u); do
     HEX=${C#\#}
     [ "$HEX" = "$BGHEX" ] && continue
     LUM=$((16#${HEX:0:2}))
-    AL=$(printf '%02X' $(( 70 + LUM*185/255 )))
+    AL=$(printf '%02X' $(( 150 + LUM*105/255 )))
     magick q.png -fuzz 0% -transparent "$C" -alpha extract -threshold 50% m.pbm
     potrace -s -t 4 -O 0.5 m.pbm -o m.svg
     sed -n '/<path/,$p' m.svg | tr '\n' ' ' \
@@ -46,7 +43,7 @@ for S in 400 300 200 150; do
   done
   {
     echo '<?xml version="1.0" encoding="utf-8"?>'
-    echo "<vector xmlns:android=\"http://schemas.android.com/apk/res/android\" android:width=\"${WDP}dp\" android:height=\"${HDP}dp\" android:viewportWidth=\"46\" android:viewportHeight=\"65\"><group android:translateY=\"56.1\" android:scaleX=\"$SC\" android:scaleY=\"-$SC\">"
+    echo "<vector xmlns:android=\"http://schemas.android.com/apk/res/android\" android:width=\"65dp\" android:height=\"65dp\" android:viewportWidth=\"65\" android:viewportHeight=\"65\"><group android:translateY=\"65\" android:scaleX=\"$SC\" android:scaleY=\"-$SC\">"
     cat body.txt
     echo '</group></vector>'
   } > ic.xml
@@ -69,9 +66,6 @@ done
 # Quita el circulo oscuro del fondo
 printf '<?xml version="1.0" encoding="utf-8"?>\n<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval"><solid android:color="#00000000"/></shape>\n' > res/drawable/fingerprint_bg.xml
 
-# Icono mas grande: menos relleno alrededor
-printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n<dimen name="lock_icon_padding">%spx</dimen>\n</resources>\n' "$PAD" > res/values/dimens.xml
-
 printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.custom.fpicon">\n<overlay android:targetPackage="com.android.systemui" android:isStatic="true" android:priority="99"/>\n<application android:hasCode="false"/>\n</manifest>\n' > AndroidManifest.xml
 
 aapt2 compile --dir res -o res.zip
@@ -82,5 +76,5 @@ mount -o rw,remount /product || true
 cp FpIconOverlay.apk /product/overlay/FpIconOverlay.apk
 chmod 644 /product/overlay/FpIconOverlay.apk
 chcon u:object_r:system_file:s0 /product/overlay/FpIconOverlay.apk
-echo "Relleno del icono: ${PAD}px"
+echo "Dibujo cuadrado 65x65 listo"
 echo "LISTO. Reinicia el telefono."
